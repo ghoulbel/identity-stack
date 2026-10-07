@@ -1,0 +1,150 @@
+# yaml-language-server: $schema=https://goauthentik.io/blueprints/schema.json
+#
+# The single shared forward-auth provider for every app behind Traefik.
+#
+# Why ONE provider instead of one provider per app:
+#   `forward_single` binds an outpost to exactly one provider, so N apps would
+#   need N outposts. `forward_domain` lets a single provider+outpost authorise
+#   every app, and `cookie_domain` shares the session across subdomains — which
+#   is precisely the required UX (one identity -> one login -> one MFA ->
+#   every authorised service). Real per-app authorisation still happens: each
+#   app gets its own Application entry with its own group/policy bindings.
+#
+# mode is NOT `proxy` on purpose: Traefik stays the sole front door and merely
+# asks Authentik for a yes/no. Authentik must never become a second reverse
+# proxy (rule 1).
+#
+# Flow references are resolved with !Find by slug, never hardcoded as UUIDs, so
+# this file survives a database restore onto the new server. Flow UUIDs are
+# required by the serializer even though the schema types the field as string.
+version: 1
+
+metadata:
+  name: homelab-forward-auth
+  labels:
+    blueprints.goauthentik.io/description: "Domain-wide forward-auth gate for ghoulhub.uk"
+
+entries:
+  # ----------------------------------------------------------------- brand --
+  # Authentik 2026.8 has NO top-level `URL` setting: an `AUTHENTIK_URL` env var
+  # is silently ignored and every generated link comes out as http://localhost.
+  # The public URL is taken from the BRAND matched against the incoming Host.
+  # The stock brand's domain is the placeholder "authentik-default", which never
+  # matches, so this entry is what makes the login redirect point at the real
+  # host. Scoped to sso.ghoulhub.uk rather than ghoulhub.uk so the brand is only
+  # activated on the IdP itself and not on every app subdomain.
+  # The outpost resolves the brand by matching the domain of the request it is
+  # handling. Scoped to `sso.ghoulhub.uk` this matches the IdP's own host and
+  # keeps branding off the app subdomains, which have no branding to show.
+  - model: authentik_brands.brand
+    identifiers:
+      default: true
+    attrs:
+      domain: sso.ghoulhub.uk
+      branding_title: Homelab SSO
+
+  # ---------------------------------------------------------------- cleanup --
+  # The first proof attempt created a per-app `forward_single` provider named
+  # "whoami". It is superseded by the domain provider below and was never wired
+  # to an outpost (hence the 404s). Drop it so it cannot linger as a second,
+  # differently-behaving gate. Deleting the provider cascades to its
+  # Application, which the per-app tile files re-create.
+  - model: authentik_providers_proxy.proxyprovider
+    state: absent
+    identifiers:
+      name: whoami
+
+  # The whoami *tile* is also test scaffolding: it existed only to prove the
+  # forward-auth round trip. Deleting the provider above left it orphaned with no
+  # provider, so it still showed up in the Authentik dashboard and did nothing
+  # when clicked. Remove it so the dashboard only lists real services. The
+  # whoami-lab fixture in /tmp and its traefik routers go with it.
+  - model: authentik_core.application
+    state: absent
+    identifiers:
+      slug: whoami
+
+  # -------------------------------------------------------------- provider --
+  - model: authentik_providers_proxy.proxyprovider
+    identifiers:
+      name: homelab-forward-auth
+    attrs:
+      name: homelab-forward-auth
+      mode: forward_domain
+      # In forward_domain mode this is Authentik's OWN public host, not the
+      # app's. It is the issuer the session is minted for.
+      external_host: https://sso.ghoulhub.uk
+      internal_host: http://authentik-server:9000
+      internal_host_ssl_validation: false
+      # Share one session across every app subdomain. This is what turns N
+      # logins into one. Scope note: the forward-auth session cookie is then
+      # readable by every origin under ghoulhub.uk, so an XSS in any single
+      # app could read it. Accepted deliberately — every one of these hosts is
+      # ours and is fronted by Traefik — but it is a real trade-off.
+      cookie_domain: .ghoulhub.uk
+      # Belt-and-braces against the rule-9 deadlock: the outpost must never
+      # demand authentication for its own callback paths. Traefik still gets
+      # the priority-15 companion router that routes /outpost.goauthentik.io/
+      # here; this regex guarantees an accidental self-request cannot loop.
+      skip_path_regex: '^/(api|outpost\.goauthentik\.io)/.*$'
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-authentication-flow]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+
+  # The Application is the authorisation gate: access is decided by this
+  # object's bindings, so tightening it later (group membership, policy
+  # engine) tightens every app at once.
+  # This tile is NOT a duplicate of the Grafana application. It represents the
+  # forward-auth GATE itself — the single yes/no check that Traefik asks before
+  # letting any app through. Apps that speak OIDC (Grafana, and later OpenWebUI)
+  # get their own Application and never touch this one; apps that can only do
+  # forward-auth (Home Assistant, Jellyfin, …) are authorised by this object alone.
+  # It has to exist as an Application because Authentik only renders a provider in
+  # the dashboard through one, and it launches Grafana purely as a sensible
+  # starting page.
+  - model: authentik_core.application
+    identifiers:
+      slug: homelab-forward-auth
+    attrs:
+      name: Homelab Access
+      slug: homelab-forward-auth
+      meta_description: >-
+        Single sign-on gate for Homelab apps that authenticate through Authentik
+        forward-auth. Apps with native OIDC (Grafana, OpenWebUI) sign in
+        directly and are listed separately.
+      meta_launch_url: https://grafana.ghoulhub.uk/
+      # Conditions must be SEQUENCES [field, value], not mappings; a mapping
+      # fails deep in the loader with a misleading tuple/tag AttributeError.
+      provider: !Find [authentik_providers_proxy.proxyprovider, [name, homelab-forward-auth]]
+
+  # --------------------------------------------------------------- outpost --
+  # The embedded outpost ships with providers=[] and therefore 404s every
+  # forward-auth request until a provider is attached to it. This is the ONLY
+  # place the provider/outpost link can be expressed: neither the Provider nor
+  # the Application model carries an outpost field in the blueprint schema.
+  # `providers` is an array of provider PKs; !Find yields the PK.
+  - model: authentik_outposts.outpost
+    identifiers:
+      name: authentik Embedded Outpost
+    attrs:
+      name: authentik Embedded Outpost
+      providers:
+        - !Find [authentik_providers_proxy.proxyprovider, [name, homelab-forward-auth]]
+      # THE setting that makes login links point at the real host. The outpost
+      # ships with authentik_host="" and authentik_host_browser="", and an empty
+      # browser host makes it emit http://localhost/application/o/authorize/...
+      # so a user clicking login lands on nothing. It is NOT derived from the
+      # Brand and NOT from web.base_url — verified by changing both and re-testing.
+      #
+      # authentik_host_browser ALONE was tested and is NOT sufficient — with only
+      # it set the redirect was still http://localhost. outposts/models.py creates
+      # the embedded outpost with defaults={type,name} only, so _config keeps the
+      # empty default_outpost_config(), and api/outposts.py default_settings shows
+      # authentik_host is the canonical "where is Authentik" field.
+      #
+      # authentik_host points at the PUBLIC url, not the in-network address: if it
+      # were http://authentik-server:9000 the outpost would hand the browser an
+      # unreachable internal name. Polling goes through Traefik's sso router, which
+      # deliberately carries no forward-auth, so this cannot self-deadlock.
+      config:
+        authentik_host: https://sso.ghoulhub.uk
+        authentik_host_browser: https://sso.ghoulhub.uk

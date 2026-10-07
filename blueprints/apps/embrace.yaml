@@ -1,0 +1,62 @@
+# yaml-language-server: $schema=https://goauthentik.io/blueprints/schema.json
+#
+# Embrace (the couples app in ai-project/intimacy-connection) speaks native
+# OIDC through next-auth v5, so it needs a real OAuth2 provider rather than the
+# shared forward-auth gate. Per the architecture spec OIDC ranks above
+# forward-auth, and here it is also the only option that yields a genuine
+# single login: Authentik authenticates once, next-auth exchanges the code, and
+# the app binds that identity to its own local user row.
+#
+# NextAuth's Authentik provider derives its callback URL from the host, so the
+# registered redirect URI must be the public one — the app is reached through
+# Traefik and the Cloudflare tunnel, never on a raw port.
+#
+# The client secret comes from !Env, never from this file, so no credential is
+# committed to git. identity-stack/bootstrap.sh generates it once and mirrors it
+# into the app's own .env, because Docker Compose cannot read across directories.
+#
+# NO auto-provisioning on the app side: this blueprint issues tokens to anyone
+# Authentik knows, but lib/auth.ts refuses any e-mail that has no local user row,
+# so signing in still requires having registered with an invite code.
+version: 1
+
+metadata:
+  name: homelab-embrace
+  labels:
+    blueprints.goauthentik.io/description: "Embrace (intimacy-connection) OIDC provider"
+
+entries:
+  - model: authentik_providers_oauth2.oauth2provider
+    identifiers:
+      name: embrace
+    attrs:
+      name: embrace
+      # confidential: next-auth keeps the secret server-side in AUTH_SECRET-signed
+      # cookies, so a client secret is the correct model here.
+      client_type: confidential
+      client_id: embrace
+      client_secret: !Env EMBRACE_OAUTH_SECRET
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-authentication-flow]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      # strict matching, single URL. next-auth appends ?code=...&state=... to this
+      # exact path, so anything else must be rejected outright.
+      redirect_uris:
+        - matching_mode: strict
+          url: https://embrace.ghoulhub.uk/api/auth/callback/authentik
+      # Stable per-user identifier. lib/auth.ts maps the OIDC identity onto a
+      # local row by e-mail, but sub_mode must still never change or the same
+      # human would accumulate a second subject.
+      sub_mode: user_uuid
+      include_claims_in_id_token: true
+
+  - model: authentik_core.application
+    identifiers:
+      slug: embrace
+    attrs:
+      name: Embrace
+      slug: embrace
+      provider: !Find [authentik_providers_oauth2.oauth2provider, [name, embrace]]
+      meta_description: Private space for couples
+      # Sends the user into onboarding after the first successful login. Harmless
+      # for an account that already has a Couple: the app redirects onward.
+      meta_launch_url: https://embrace.ghoulhub.uk/onboarding/couple

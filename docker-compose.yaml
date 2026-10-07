@@ -1,0 +1,168 @@
+# ---------------------------------------------------------------------------
+# identity-stack — the single source of truth for *who you are*.
+#
+# Topology note (this is the part that matters):
+#   authentik-server joins BOTH networks:
+#     - proxy  : Traefik must reach the embedded outpost to run forward-auth.
+#     - backend: reaches its database, which has no route off the host.
+#   The outpost endpoint Authentik needs (/outpost.goauthentik.io/...) is
+#   served by authentik-server itself on :9000, so no separate outpost
+#   container and no Docker socket mount are required. That socket is a
+#   privilege escalation into the host; we do not need it, so it is absent.
+#
+# Nothing here is ever routed through Traefik. Authentik is the thing every
+# other service depends on for authentication; putting it behind the proxy
+# that depends on it is precisely how you lock yourself out of your own IdP.
+# ---------------------------------------------------------------------------
+services:
+  postgresql:
+    image: docker.io/library/postgres:16-alpine
+    container_name: authentik-postgresql
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${PG_DB:-authentik}
+      POSTGRES_USER: ${PG_USER:-authentik}
+      POSTGRES_PASSWORD: ${PG_PASS:?PG_PASS missing — run ./bootstrap.sh}
+    volumes:
+      # Bind mount, not a named volume: Kopia backs up this directory, but it
+      # cannot see /var/lib/docker/volumes. A named volume would look like it
+      # was backed up while silently being one disk failure from gone.
+      - ./data/postgres:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  authentik-server:
+    image: ghcr.io/goauthentik/server:${AUTHENTIK_TAG:-2026.8.3}
+    container_name: authentik-server
+    restart: unless-stopped
+    command: server
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    # Rule 14 — the break-glass path. Bound to loopback and to this host's
+    # Tailscale address ONLY, so it is reachable from a trusted LAN/tailnet
+    # machine but has no route from the internet.
+    #
+    # ${TAILSCALE_IP:?...} is deliberate: an empty value would silently become
+    # ":9000" and publish the IdP on 0.0.0.0. Compose must fail instead.
+    ports:
+      - "127.0.0.1:${AUTHENTIK_RECOVERY_PORT:-9000}:9000"
+      - "${TAILSCALE_IP:?TAILSCALE_IP unset — run ../bootstrap.sh}:${AUTHENTIK_RECOVERY_PORT:-9000}:9000"
+    environment:
+      AUTHENTIK_POSTGRESQL__HOST: postgresql
+      AUTHENTIK_POSTGRESQL__NAME: ${PG_DB:-authentik}
+      AUTHENTIK_POSTGRESQL__USER: ${PG_USER:-authentik}
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${PG_PASS:?PG_PASS missing — run ./bootstrap.sh}
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:?AUTHENTIK_SECRET_KEY missing — run ./bootstrap.sh}
+      # Initial admin. Only consumed on a database that has never been
+      # initialised; changing it later has no effect.
+      AUTHENTIK_BOOTSTRAP_EMAIL: ${AUTHENTIK_BOOTSTRAP_EMAIL:?set in .env}
+      AUTHENTIK_BOOTSTRAP_PASSWORD: ${AUTHENTIK_BOOTSTRAP_PASSWORD:?set in .env}
+      AUTHENTIK_BOOTSTRAP_TOKEN: ${AUTHENTIK_BOOTSTRAP_TOKEN:?set in .env}
+      AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
+      AUTHENTIK_DISABLE_UPDATE_CHECK: "true"
+      AUTHENTIK_COOKIE_DOMAIN: ${AUTHENTIK_COOKIE_DOMAIN:-}
+      # Authentik's own public URL root (scheme + host), paired with web.path.
+      # This is what makes the outpost build authorize links against the real
+      # host instead of http://localhost. Note there is NO top-level `url`
+      # setting in 2026.8 — see the note below before adding one.
+      AUTHENTIK_WEB__BASE_URL: ${AUTHENTIK_WEB_BASE_URL:-}
+      # There is deliberately NO AUTHENTIK_URL here. Authentik 2026.8 has no
+      # top-level URL setting, so such a variable is accepted by compose and
+      # then silently ignored by Authentik — the exact failure that sent every
+      # login redirect to http://localhost. The Brand (blueprints) plus
+      # AUTHENTIK_WEB__BASE_URL above together supply the public URL.
+      # Consumed by blueprints/apps/*.yaml via !Env, so OAuth client secrets
+      # live in .env and never in git. The worker needs these too: it is the
+      # worker, not the server, that runs the blueprint discovery task.
+      GRAFANA_OAUTH_SECRET: ${GRAFANA_OAUTH_SECRET:-}
+      OPENWEBUI_OAUTH_SECRET: ${OPENWEBUI_OAUTH_SECRET:-}
+      # Consumed by blueprints/apps/embrace.yaml via !Env (next-auth OIDC secret).
+      EMBRACE_OAUTH_SECRET: ${EMBRACE_OAUTH_SECRET:-}
+      MARINA_TEMP_PASSWORD: ${MARINA_TEMP_PASSWORD:-}
+      MONCEF_TEMP_PASSWORD: ${MONCEF_TEMP_PASSWORD:-}
+      TZ: ${TZ:-Europe/Zurich}
+    volumes:
+      - ./data/authentik:/data
+      - ./data/media:/media
+      - ./data/templates:/templates
+      # Mounted at /blueprints/custom, NOT over /blueprints: the image ships
+      # default/, example/ and system/ blueprints that Authentik needs. Shadows
+      # those subtrees and it loses its own flows.
+      - ./blueprints:/blueprints/custom:ro
+    networks:
+      - proxy
+      - backend
+    # First boot runs database migrations and can take a few minutes, so the
+    # start period is generous — otherwise Docker marks it unhealthy, Traefik
+    # sees a red dependency, and the cause looks like a config fault.
+    healthcheck:
+      test: ["CMD", "ak", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  authentik-worker:
+    image: ghcr.io/goauthentik/server:${AUTHENTIK_TAG:-2026.8.3}
+    container_name: authentik-worker
+    restart: unless-stopped
+    command: worker
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    environment:
+      AUTHENTIK_POSTGRESQL__HOST: postgresql
+      AUTHENTIK_POSTGRESQL__NAME: ${PG_DB:-authentik}
+      AUTHENTIK_POSTGRESQL__USER: ${PG_USER:-authentik}
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${PG_PASS:?PG_PASS missing — run ./bootstrap.sh}
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:?AUTHENTIK_SECRET_KEY missing — run ./bootstrap.sh}
+      AUTHENTIK_BOOTSTRAP_EMAIL: ${AUTHENTIK_BOOTSTRAP_EMAIL:?set in .env}
+      AUTHENTIK_BOOTSTRAP_PASSWORD: ${AUTHENTIK_BOOTSTRAP_PASSWORD:?set in .env}
+      AUTHENTIK_BOOTSTRAP_TOKEN: ${AUTHENTIK_BOOTSTRAP_TOKEN:?set in .env}
+      AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
+      AUTHENTIK_DISABLE_UPDATE_CHECK: "true"
+      # No AUTHENTIK_URL: see the note in the server block. Authentik 2026.8
+      # ignores it; the public URL is web.base_url + the Brand.
+      # The worker mints tokens and notification emails containing absolute
+      # links, so it needs the same public root as the server.
+      AUTHENTIK_WEB__BASE_URL: ${AUTHENTIK_WEB_BASE_URL:-}
+      # Consumed by blueprints/apps/*.yaml via !Env, so OAuth client secrets
+      # live in .env and never in git. The worker needs these too: it is the
+      # worker, not the server, that runs the blueprint discovery task.
+      GRAFANA_OAUTH_SECRET: ${GRAFANA_OAUTH_SECRET:-}
+      OPENWEBUI_OAUTH_SECRET: ${OPENWEBUI_OAUTH_SECRET:-}
+      # Consumed by blueprints/apps/embrace.yaml via !Env (next-auth OIDC secret).
+      EMBRACE_OAUTH_SECRET: ${EMBRACE_OAUTH_SECRET:-}
+      MARINA_TEMP_PASSWORD: ${MARINA_TEMP_PASSWORD:-}
+      MONCEF_TEMP_PASSWORD: ${MONCEF_TEMP_PASSWORD:-}
+      TZ: ${TZ:-Europe/Zurich}
+    volumes:
+      - ./data/authentik:/data
+      - ./data/certs:/certs
+      - ./data/templates:/templates
+      # The worker runs the blueprint discovery/apply scheduled task, so this
+      # mount must exist on the worker as well as the server.
+      - ./blueprints:/blueprints/custom:ro
+    networks:
+      - backend
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+networks:
+  proxy:
+    external: true
+  backend:
+    external: true

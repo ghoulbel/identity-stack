@@ -1,0 +1,58 @@
+# yaml-language-server: $schema=https://goauthentik.io/blueprints/schema.json
+#
+# OpenWebUI speaks native OIDC, which the architecture spec ranks above
+# forward-auth. Its login screen is the gate, so the Traefik router for
+# openwebui.ghoulhub.uk deliberately carries NO authentik-forwardauth
+# middleware — gating it twice would mean two sessions and two redirects for a
+# single login.
+#
+# Safety argument for leaving the router open: the host stops publishing 3000
+# entirely, so OpenWebUI is reachable only through Traefik, and OpenWebUI itself
+# serves no data to an unauthenticated session.
+#
+# The client secret comes from !Env, never from this file, so no credential is
+# ever committed to git.
+#
+# Convention: one file per app, provider + application in the same file,
+# because a blueprint is applied in a single atomic transaction.
+version: 1
+
+metadata:
+  name: homelab-openwebui
+  labels:
+    blueprints.goauthentik.io/description: "OpenWebUI OIDC provider"
+
+entries:
+  - model: authentik_providers_oauth2.oauth2provider
+    identifiers:
+      name: openwebui
+    attrs:
+      name: openwebui
+      # confidential: OpenWebUI keeps the secret server-side, so PKCE alone is
+      # not the whole story and a secret is correct here.
+      client_type: confidential
+      client_id: openwebui
+      client_secret: !Env OPENWEBUI_OAUTH_SECRET
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-authentication-flow]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      # strict matching, single URL: an attacker cannot redirect the code
+      # elsewhere by rewriting the callback path.
+      redirect_uris:
+        - matching_mode: strict
+          url: https://openwebui.ghoulhub.uk/oauth/oidc/callback
+      # Stable per-user identifier. OpenWebUI keys accounts off `sub` by
+      # default, so this must never change or the same human accumulates
+      # duplicate accounts.
+      sub_mode: user_uuid
+      # OpenWebUI reads claims from the userinfo endpoint, but inlining them in
+      # the id_token too costs nothing and covers either path.
+      include_claims_in_id_token: true
+
+  - model: authentik_core.application
+    identifiers:
+      slug: openwebui
+    attrs:
+      name: OpenWebUI
+      slug: openwebui
+      provider: !Find [authentik_providers_oauth2.oauth2provider, [name, openwebui]]
+      meta_description: "Local LLM chat interface"

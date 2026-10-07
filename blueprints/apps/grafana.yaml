@@ -1,0 +1,57 @@
+# yaml-language-server: $schema=https://goauthentik.io/blueprints/schema.json
+#
+# Grafana speaks native OIDC, which the architecture spec ranks above
+# forward-auth (OIDC > SAML > Forward-Auth). That also means Grafana's own
+# login screen is the gate, so the Traefik router for grafana.ghoulhub.uk
+# deliberately carries NO authentik-forwardauth middleware: gating it twice
+# would mean two sessions and two redirects for one login.
+#
+# Safety argument for leaving the router open: the host stops publishing
+# 3010 entirely, so Grafana is reachable only through Traefik, and Grafana
+# itself refuses to serve anything until an OIDC login succeeds.
+#
+# The client secret comes from !Env, never from this file, so no credential
+# is ever committed to git.
+#
+# Convention: one file per app, provider + application in the same file,
+# because a blueprint is applied in a single atomic transaction.
+version: 1
+
+metadata:
+  name: homelab-grafana
+  labels:
+    blueprints.goauthentik.io/description: "Grafana OIDC provider"
+
+entries:
+  - model: authentik_providers_oauth2.oauth2provider
+    identifiers:
+      name: grafana
+    attrs:
+      name: grafana
+      # confidential: Grafana keeps the secret server-side, so PKCE alone is
+      # not the whole story and a secret is correct here.
+      client_type: confidential
+      client_id: grafana
+      client_secret: !Env GRAFANA_OAUTH_SECRET
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-authentication-flow]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      # strict matching, single URL: an attacker cannot redirect the code
+      # elsewhere by rewriting the callback path.
+      redirect_uris:
+        - matching_mode: strict
+          url: https://grafana.ghoulhub.uk/login/generic_oauth
+      # Stable per-user identifier; Grafana keys accounts off `sub`, so this
+      # must never change or the same human accumulates duplicate accounts.
+      sub_mode: user_uuid
+      # Grafana reads claims from the id_token, not the userinfo endpoint,
+      # so email/groups must be inlined here.
+      include_claims_in_id_token: true
+
+  - model: authentik_core.application
+    identifiers:
+      slug: grafana
+    attrs:
+      name: Grafana
+      slug: grafana
+      provider: !Find [authentik_providers_oauth2.oauth2provider, [name, grafana]]
+      meta_description: Dashboards and alerting

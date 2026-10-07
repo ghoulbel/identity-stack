@@ -1,0 +1,21 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# The identity database. This is the crown jewel: without it every account,
+# session and application definition is gone and every service must be rebuilt.
+# Kopia snapshots it, which is exactly why it is a bind mount inside the repo
+# rather than a Docker named volume.
+data/
+certs/
+media/
+
+# Templates are authored config and safe to commit, but keep them local until
+# you actually use them so nothing here is mistaken for live configuration.
+custom-templates/
+
+*.back
+*.bak
+*.old
+*.log
