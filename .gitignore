@@ -5,8 +5,13 @@
 
 # The identity database. This is the crown jewel: without it every account,
 # session and application definition is gone and every service must be rebuilt.
-# Kopia snapshots it, which is exactly why it is a bind mount inside the repo
-# rather than a Docker named volume.
+# It stays a bind mount inside the repo (rather than a Docker named volume) so
+# that it is visible to both the backup tooling and plain `ls`.
+#
+# NOTE: Kopia does NOT snapshot these directories — copying a live Postgres data
+# directory is not a valid backup. The consistent copy is the pg_dump archive in
+# backups/, produced by the db-backup service and taken by Kopia's Tier 1 policy.
+# See db-backup-loop.sh.
 data/
 certs/
 media/
@@ -19,3 +24,6 @@ custom-templates/
 *.bak
 *.old
 *.log
+
+# pg_dump archives produced by the db-backup service
+backups/

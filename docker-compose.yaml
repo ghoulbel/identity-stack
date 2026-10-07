@@ -37,6 +37,40 @@ services:
       retries: 5
       start_period: 20s
 
+  # Consistent database backups. See the long comment in db-backup-loop.sh for
+  # why the raw data directory is not a usable backup.
+  #
+  # Uses the SAME postgres:16-alpine image as the server so pg_dump is always
+  # the same major version as the database it dumps — a mismatched pg_dump
+  # refuses to run or produces a subtly wrong archive.
+  #
+  # backend only: it needs the database and nothing else, so it gets no route
+  # off the host and no presence on the proxy network.
+  db-backup:
+    image: docker.io/library/postgres:16-alpine
+    container_name: authentik-db-backup
+    restart: unless-stopped
+    environment:
+      PGHOST: authentik-postgresql
+      PGDATABASE: ${PG_DB:-authentik}
+      PGUSER: ${PG_USER:-authentik}
+      PGPASSWORD: ${PG_PASS:?PG_PASS missing — run ./bootstrap.sh}
+      TZ: ${TZ:-Europe/Zurich}
+      # 02:47 local, which is deliberately ~30 min BEFORE Kopia's Tier 1 daily
+      # snapshot at 03:17, so the snapshot is guaranteed to contain that night's
+      # dump rather than last night's.
+      BACKUP_AT: ${DB_BACKUP_AT:-02:47}
+      BACKUP_KEEP_DAYS: ${DB_BACKUP_KEEP_DAYS:-14}
+    volumes:
+      - ./backups:/backups
+      - ./db-backup-loop.sh:/usr/local/bin/db-backup-loop.sh:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/db-backup-loop.sh"]
+    networks:
+      - backend
+    depends_on:
+      postgresql:
+        condition: service_healthy
+
   authentik-server:
     image: ghcr.io/goauthentik/server:${AUTHENTIK_TAG:-2026.8.3}
     container_name: authentik-server
