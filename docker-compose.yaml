@@ -65,6 +65,7 @@ services:
       - ./backups:/backups
       - ./db-backup-loop.sh:/usr/local/bin/db-backup-loop.sh:ro
     entrypoint: ["/bin/sh", "/usr/local/bin/db-backup-loop.sh"]
+    mem_limit: 256m
     networks:
       - backend
     depends_on:
