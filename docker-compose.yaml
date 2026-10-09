@@ -122,6 +122,14 @@ services:
       EMBRACE_OAUTH_SECRET: ${EMBRACE_OAUTH_SECRET:-}
       MARINA_TEMP_PASSWORD: ${MARINA_TEMP_PASSWORD:-}
       MONCEF_TEMP_PASSWORD: ${MONCEF_TEMP_PASSWORD:-}
+      # SMTP for the EmailStage (password-reset mail). Values live in .env;
+      # compose interpolation delivers them to the container.
+      AUTHENTIK_EMAIL__HOST: ${AUTHENTIK_EMAIL__HOST:-}
+      AUTHENTIK_EMAIL__PORT: ${AUTHENTIK_EMAIL__PORT:-587}
+      AUTHENTIK_EMAIL__USERNAME: ${AUTHENTIK_EMAIL__USERNAME:-}
+      AUTHENTIK_EMAIL__PASSWORD: ${AUTHENTIK_EMAIL__PASSWORD:-}
+      AUTHENTIK_EMAIL__USE_TLS: ${AUTHENTIK_EMAIL__USE_TLS:-true}
+      AUTHENTIK_EMAIL__FROM: ${AUTHENTIK_EMAIL__FROM:-}
       TZ: ${TZ:-Europe/Zurich}
     volumes:
       - ./data/authentik:/data
@@ -181,6 +189,14 @@ services:
       EMBRACE_OAUTH_SECRET: ${EMBRACE_OAUTH_SECRET:-}
       MARINA_TEMP_PASSWORD: ${MARINA_TEMP_PASSWORD:-}
       MONCEF_TEMP_PASSWORD: ${MONCEF_TEMP_PASSWORD:-}
+      # SMTP for the EmailStage (password-reset mail). Values live in .env;
+      # compose interpolation delivers them to the container.
+      AUTHENTIK_EMAIL__HOST: ${AUTHENTIK_EMAIL__HOST:-}
+      AUTHENTIK_EMAIL__PORT: ${AUTHENTIK_EMAIL__PORT:-587}
+      AUTHENTIK_EMAIL__USERNAME: ${AUTHENTIK_EMAIL__USERNAME:-}
+      AUTHENTIK_EMAIL__PASSWORD: ${AUTHENTIK_EMAIL__PASSWORD:-}
+      AUTHENTIK_EMAIL__USE_TLS: ${AUTHENTIK_EMAIL__USE_TLS:-true}
+      AUTHENTIK_EMAIL__FROM: ${AUTHENTIK_EMAIL__FROM:-}
       TZ: ${TZ:-Europe/Zurich}
     volumes:
       - ./data/authentik:/data
