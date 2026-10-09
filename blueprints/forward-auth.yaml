@@ -87,7 +87,7 @@ entries:
       # the priority-15 companion router that routes /outpost.goauthentik.io/
       # here; this regex guarantees an accidental self-request cannot loop.
       skip_path_regex: '^/(api|outpost\.goauthentik\.io)/.*$'
-      authorization_flow: !Find [authentik_flows.flow, [slug, default-authentication-flow]]
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
       invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
 
   # The Application is the authorisation gate: access is decided by this
